@@ -1,13 +1,13 @@
+import os
 import requests
 from bs4 import BeautifulSoup
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 import re
-import os
-import time
 
 # ========== CONFIGURACIÓN ==========
-DB_PATH = 'loteria.db'
+DATABASE_URL = os.environ.get('DATABASE_URL')
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
@@ -18,55 +18,52 @@ HORARIOS_SORTEOS = [
     "04:30 PM", "05:30 PM", "06:30 PM", "07:30 PM"
 ]
 
-# ========== BASE DE DATOS ==========
+# ========== BASE DE DATOS (SUPABASE) ==========
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Conecta a Supabase (PostgreSQL)"""
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
+    """Crea las tablas en Supabase si no existen"""
     conn = get_db()
     cursor = conn.cursor()
     
-    # Tabla de resultados
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS resultados (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             loteria TEXT NOT NULL,
             fecha TEXT NOT NULL,
             hora TEXT NOT NULL,
             numero TEXT,
             animal TEXT,
             resultado_completo TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(loteria, fecha, hora)
         )
     ''')
     
-    # Índices
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_loteria_fecha ON resultados(loteria, fecha)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_animal ON resultados(animal)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_fecha ON resultados(fecha)')
     
-    # Tabla de usuarios
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             telegram_id TEXT UNIQUE NOT NULL,
-            telefono TEXT UNIQUE NOT NULL,
+            telefono TEXT NOT NULL,
             nombre TEXT,
-            suscripcion_activa BOOLEAN DEFAULT 0,
+            suscripcion_activa BOOLEAN DEFAULT FALSE,
             fecha_vencimiento DATE,
-            fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
-            ultimo_acceso DATETIME
+            fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
     conn.commit()
     conn.close()
-    print("✅ Base de datos inicializada")
+    print("✅ Base de datos inicializada en Supabase")
 
 def guardar_resultado(loteria, fecha, hora, resultado_completo):
+    """Guarda un resultado en Supabase"""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -82,14 +79,14 @@ def guardar_resultado(loteria, fecha, hora, resultado_completo):
     
     try:
         cursor.execute('''
-            INSERT OR IGNORE INTO resultados 
-            (loteria, fecha, hora, numero, animal, resultado_completo)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO resultados (loteria, fecha, hora, numero, animal, resultado_completo)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (loteria, fecha, hora) DO NOTHING
         ''', (loteria, fecha, hora, numero, animal, resultado_completo))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
-        print(f"  ❌ Error guardando: {e}")
+        print(f"Error guardando: {e}")
         return False
     finally:
         conn.close()
@@ -202,9 +199,10 @@ def sincronizar_semana_actual(loteria):
 # ========== MAIN ==========
 def ejecutar_scraper():
     print("="*60)
-    print("🎲 SCRAPER DE LOTERÍAS - RENDER")
+    print("🎲 SCRAPER DE LOTERÍAS - SUPABASE")
     print("="*60)
     
+    # Inicializar base de datos
     init_db()
     
     # Obtener loterías
